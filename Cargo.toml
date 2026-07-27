@@ -1,0 +1,11 @@
+[package]
+name = "vibe-rt"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+license = "MIT"
+description = "The no-std Linux userspace runtime for vibeOS"
+repository = "https://github.com/vibedOS/vibe-rt"
+
+[lib]
+path = "src/lib.rs"

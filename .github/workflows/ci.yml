@@ -1,0 +1,18 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: rustup toolchain install 1.94.0 --profile minimal --component clippy,rustfmt
+      - run: cargo +1.94.0 fmt -- --check
+      - run: cargo +1.94.0 test
+      - run: cargo +1.94.0 clippy --all-targets -- -D warnings
