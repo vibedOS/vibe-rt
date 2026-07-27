@@ -9,14 +9,28 @@ use core::marker::PhantomData;
 use core::ptr;
 
 const SYS_WRITE: usize = 1;
+const SYS_READ: usize = 0;
+const SYS_NANOSLEEP: usize = 35;
+const SYS_GETPID: usize = 39;
+const SYS_FORK: usize = 57;
+const SYS_EXECVE: usize = 59;
+const SYS_WAIT4: usize = 61;
+const SYS_SYNC: usize = 162;
 const SYS_PAUSE: usize = 34;
 const SYS_MOUNT: usize = 165;
+const SYS_REBOOT: usize = 169;
 const SYS_EXIT_GROUP: usize = 231;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Errno(pub i32);
 
 pub type Result<T> = core::result::Result<T, Errno>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Fork {
+    Parent(i32),
+    Child,
+}
 
 #[derive(Clone, Copy)]
 pub struct Args<'a> {
@@ -126,6 +140,11 @@ pub fn write(fd: usize, bytes: &[u8]) -> Result<usize> {
     decode(unsafe { syscall3(SYS_WRITE, fd, bytes.as_ptr() as usize, bytes.len()) })
 }
 
+pub fn read(fd: usize, bytes: &mut [u8]) -> Result<usize> {
+    // SAFETY: bytes supplies a valid writable pointer and length for the syscall.
+    decode(unsafe { syscall3(SYS_READ, fd, bytes.as_mut_ptr() as usize, bytes.len()) })
+}
+
 pub fn write_all(fd: usize, mut bytes: &[u8]) -> Result<()> {
     while !bytes.is_empty() {
         let written = write(fd, bytes)?;
@@ -199,6 +218,81 @@ pub fn pause() {
     }
 }
 
+pub fn fork() -> Result<Fork> {
+    // SAFETY: fork has no arguments.
+    decode(unsafe { syscall0(SYS_FORK) }).map(|pid| {
+        if pid == 0 {
+            Fork::Child
+        } else {
+            Fork::Parent(pid as i32)
+        }
+    })
+}
+
+/// Replaces the current process image.
+///
+/// # Safety
+///
+/// `argv` and `envp` must point to null-terminated arrays of valid C strings.
+pub unsafe fn execve(
+    path: &CStr,
+    argv: *const *const c_char,
+    envp: *const *const c_char,
+) -> Result<()> {
+    // SAFETY: The caller guarantees valid, null-terminated argument arrays.
+    decode(unsafe {
+        syscall3(
+            SYS_EXECVE,
+            path.as_ptr() as usize,
+            argv as usize,
+            envp as usize,
+        )
+    })
+    .map(|_| ())
+}
+
+pub fn wait_pid(pid: i32) -> Result<i32> {
+    let mut status = 0_i32;
+    // SAFETY: status points to writable memory and a null rusage is allowed.
+    decode(unsafe { syscall4(SYS_WAIT4, pid as usize, (&raw mut status) as usize, 0, 0) })
+        .map(|_| status)
+}
+
+pub fn getpid() -> i32 {
+    // SAFETY: getpid has no arguments and cannot fail.
+    unsafe { syscall0(SYS_GETPID) as i32 }
+}
+
+pub fn sleep(seconds: i64) {
+    #[repr(C)]
+    struct Timespec {
+        seconds: i64,
+        nanoseconds: i64,
+    }
+
+    let duration = Timespec {
+        seconds,
+        nanoseconds: 0,
+    };
+    // SAFETY: duration points to a valid timespec and the remainder is unused.
+    unsafe {
+        syscall2(SYS_NANOSLEEP, (&raw const duration) as usize, 0);
+    }
+}
+
+pub fn reboot() -> Result<()> {
+    const MAGIC_1: usize = 0xfee1_dead;
+    const MAGIC_2: usize = 0x2812_1969;
+    const RESTART: usize = 0x0123_4567;
+
+    // SAFETY: sync has no arguments.
+    unsafe {
+        syscall0(SYS_SYNC);
+    }
+    // SAFETY: Linux documents these constants for the reboot syscall.
+    decode(unsafe { syscall4(SYS_REBOOT, MAGIC_1, MAGIC_2, RESTART, 0) }).map(|_| ())
+}
+
 pub fn exit(code: i32) -> ! {
     // SAFETY: exit_group terminates the current process.
     unsafe {
@@ -259,6 +353,23 @@ unsafe fn syscall1(number: usize, first: usize) -> isize {
     result
 }
 
+unsafe fn syscall2(number: usize, first: usize, second: usize) -> isize {
+    let result: isize;
+    // SAFETY: The caller validates the syscall number and arguments.
+    unsafe {
+        asm!(
+            "syscall",
+            inlateout("rax") number as isize => result,
+            in("rdi") first,
+            in("rsi") second,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack),
+        );
+    }
+    result
+}
+
 unsafe fn syscall3(number: usize, first: usize, second: usize, third: usize) -> isize {
     let result: isize;
     // SAFETY: The caller validates the syscall number and arguments.
@@ -269,6 +380,31 @@ unsafe fn syscall3(number: usize, first: usize, second: usize, third: usize) -> 
             in("rdi") first,
             in("rsi") second,
             in("rdx") third,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack),
+        );
+    }
+    result
+}
+
+unsafe fn syscall4(
+    number: usize,
+    first: usize,
+    second: usize,
+    third: usize,
+    fourth: usize,
+) -> isize {
+    let result: isize;
+    // SAFETY: The caller validates the syscall number and arguments.
+    unsafe {
+        asm!(
+            "syscall",
+            inlateout("rax") number as isize => result,
+            in("rdi") first,
+            in("rsi") second,
+            in("rdx") third,
+            in("r10") fourth,
             lateout("rcx") _,
             lateout("r11") _,
             options(nostack),
