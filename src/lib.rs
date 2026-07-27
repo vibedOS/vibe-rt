@@ -306,6 +306,78 @@ pub fn exit(code: i32) -> ! {
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_eh_personality() {}
 
+/// Fills `count` bytes at `destination` with `value`.
+///
+/// # Safety
+///
+/// `destination` must be valid for writes of `count` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn memset(destination: *mut c_void, value: i32, count: usize) -> *mut c_void {
+    let bytes = destination.cast::<u8>();
+    for offset in 0..count {
+        // SAFETY: The caller guarantees the full destination range is writable.
+        unsafe {
+            bytes.add(offset).write_volatile(value as u8);
+        }
+    }
+    destination
+}
+
+/// Copies `count` non-overlapping bytes from `source` to `destination`.
+///
+/// # Safety
+///
+/// Both ranges must be valid for `count` bytes and must not overlap.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn memcpy(
+    destination: *mut c_void,
+    source: *const c_void,
+    count: usize,
+) -> *mut c_void {
+    let destination_bytes = destination.cast::<u8>();
+    let source_bytes = source.cast::<u8>();
+    for offset in 0..count {
+        // SAFETY: The caller guarantees valid, non-overlapping ranges.
+        unsafe {
+            destination_bytes
+                .add(offset)
+                .write_volatile(source_bytes.add(offset).read_volatile());
+        }
+    }
+    destination
+}
+
+/// Moves `count` bytes from `source` to `destination`, allowing overlap.
+///
+/// # Safety
+///
+/// Both ranges must be valid for `count` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn memmove(
+    destination: *mut c_void,
+    source: *const c_void,
+    count: usize,
+) -> *mut c_void {
+    let destination_bytes = destination.cast::<u8>();
+    let source_bytes = source.cast::<u8>();
+    if (destination_bytes as usize) <= (source_bytes as usize) {
+        // SAFETY: memcpy's forward copy is valid when destination precedes source.
+        unsafe {
+            memcpy(destination, source, count);
+        }
+    } else {
+        for offset in (0..count).rev() {
+            // SAFETY: Reverse order preserves bytes for overlapping ranges.
+            unsafe {
+                destination_bytes
+                    .add(offset)
+                    .write_volatile(source_bytes.add(offset).read_volatile());
+            }
+        }
+    }
+    destination
+}
+
 fn decode(value: isize) -> Result<usize> {
     if value < 0 {
         Err(Errno((-value) as i32))
@@ -442,11 +514,32 @@ unsafe fn syscall5(
 
 #[cfg(test)]
 mod tests {
-    use super::decode;
+    use super::{decode, memcpy, memmove, memset};
 
     #[test]
     fn decodes_linux_syscall_results() {
         assert_eq!(decode(7), Ok(7));
         assert_eq!(decode(-2), Err(super::Errno(2)));
+    }
+
+    #[test]
+    fn supplies_compiler_memory_intrinsics() {
+        let mut bytes = [0_u8; 6];
+        // SAFETY: All pointers reference the local six-byte array.
+        unsafe {
+            memset(bytes.as_mut_ptr().cast(), 7, bytes.len());
+            assert_eq!(bytes, [7; 6]);
+
+            let source = [1_u8, 2, 3];
+            memcpy(
+                bytes.as_mut_ptr().cast(),
+                source.as_ptr().cast(),
+                source.len(),
+            );
+            assert_eq!(bytes, [1, 2, 3, 7, 7, 7]);
+
+            memmove(bytes.as_mut_ptr().add(1).cast(), bytes.as_ptr().cast(), 5);
+            assert_eq!(bytes, [1, 1, 2, 3, 7, 7]);
+        }
     }
 }
