@@ -7,6 +7,7 @@ use core::ffi::{CStr, c_char, c_void};
 use core::fmt::{self, Write};
 use core::marker::PhantomData;
 use core::ptr;
+use core::slice;
 
 const SYS_WRITE: usize = 1;
 const SYS_READ: usize = 0;
@@ -51,7 +52,7 @@ impl<'a> Iterator for Args<'a> {
         let value = unsafe {
             let pointer = *self.current;
             self.current = self.current.add(1);
-            CStr::from_ptr(pointer.cast::<c_char>()).to_bytes()
+            c_bytes(pointer)
         };
         self.remaining -= 1;
         Some(value)
@@ -83,7 +84,7 @@ impl<'a> Iterator for Env<'a> {
         }
 
         // SAFETY: Each non-null envp entry points to a NUL-terminated string.
-        let value = unsafe { CStr::from_ptr(pointer.cast::<c_char>()).to_bytes() };
+        let value = unsafe { c_bytes(pointer) };
         // SAFETY: The null terminator checked above guarantees another pointer slot.
         self.current = unsafe { self.current.add(1) };
         Some(value)
@@ -110,6 +111,16 @@ pub unsafe fn startup<'a>(stack: *const usize) -> (Args<'a>, Env<'a>) {
             marker: PhantomData,
         },
     )
+}
+
+unsafe fn c_bytes<'a>(pointer: *const u8) -> &'a [u8] {
+    let mut length = 0;
+    // SAFETY: Linux supplies a readable NUL-terminated string.
+    while unsafe { pointer.add(length).read_volatile() } != 0 {
+        length += 1;
+    }
+    // SAFETY: The scan above established the readable string length.
+    unsafe { slice::from_raw_parts(pointer, length) }
 }
 
 #[macro_export]
