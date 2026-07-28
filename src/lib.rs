@@ -31,6 +31,7 @@ const SYS_PAUSE: usize = 34;
 const SYS_MOUNT: usize = 165;
 const SYS_REBOOT: usize = 169;
 const SYS_EXIT_GROUP: usize = 231;
+const SYS_OPENAT: usize = 257;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Errno(pub i32);
@@ -242,6 +243,14 @@ pub fn accept(listener: i32) -> Result<i32> {
 pub fn close(fd: i32) -> Result<()> {
     // SAFETY: close accepts any integer descriptor and reports invalid ones.
     decode(unsafe { syscall1(SYS_CLOSE, fd as usize) }).map(|_| ())
+}
+
+pub fn open_read(path: &CStr) -> Result<i32> {
+    const AT_FDCWD: usize = (-100_isize) as usize;
+    const O_RDONLY: usize = 0;
+    // SAFETY: path is NUL-terminated; read-only openat ignores the mode argument.
+    decode(unsafe { syscall4(SYS_OPENAT, AT_FDCWD, path.as_ptr() as usize, O_RDONLY, 0) })
+        .map(|fd| fd as i32)
 }
 
 #[doc(hidden)]
@@ -641,7 +650,7 @@ unsafe fn syscall5(
 
 #[cfg(test)]
 mod tests {
-    use super::{decode, memcpy, memmove, memset, strlen};
+    use super::{close, decode, memcpy, memmove, memset, open_read, strlen};
 
     #[test]
     fn decodes_linux_syscall_results() {
@@ -670,5 +679,11 @@ mod tests {
 
             assert_eq!(strlen(c"vibe".as_ptr()), 4);
         }
+    }
+
+    #[test]
+    fn opens_a_file_for_reading() {
+        let fd = open_read(c"/dev/null").unwrap();
+        close(fd).unwrap();
     }
 }
