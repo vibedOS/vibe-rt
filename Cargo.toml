@@ -9,3 +9,6 @@ repository = "https://github.com/vibedOS/vibe-rt"
 
 [lib]
 path = "src/lib.rs"
+
+[features]
+hosted = []
