@@ -26,8 +26,10 @@ const SYS_SETSOCKOPT: usize = 54;
 const SYS_FORK: usize = 57;
 const SYS_EXECVE: usize = 59;
 const SYS_WAIT4: usize = 61;
+const SYS_FSYNC: usize = 74;
 const SYS_GETCWD: usize = 79;
 const SYS_CHDIR: usize = 80;
+const SYS_FCHMOD: usize = 91;
 const SYS_SYNC: usize = 162;
 const SYS_PRCTL: usize = 157;
 const SYS_PAUSE: usize = 34;
@@ -38,6 +40,7 @@ const SYS_EXIT_GROUP: usize = 231;
 const SYS_OPENAT: usize = 257;
 const SYS_MKDIRAT: usize = 258;
 const SYS_UNLINKAT: usize = 263;
+const SYS_RENAMEAT: usize = 264;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Errno(pub i32);
@@ -309,6 +312,16 @@ pub fn duplicate_to(fd: i32, target: i32) -> Result<()> {
     decode(unsafe { syscall2(SYS_DUP2, fd as usize, target as usize) }).map(|_| ())
 }
 
+pub fn sync_file(fd: i32) -> Result<()> {
+    // SAFETY: fsync validates the integer descriptor.
+    decode(unsafe { syscall1(SYS_FSYNC, fd as usize) }).map(|_| ())
+}
+
+pub fn set_mode(fd: i32, mode: u32) -> Result<()> {
+    // SAFETY: fchmod validates the descriptor and mode bits.
+    decode(unsafe { syscall2(SYS_FCHMOD, fd as usize, mode as usize) }).map(|_| ())
+}
+
 pub fn create_directory(path: &CStr) -> Result<()> {
     const AT_FDCWD: usize = (-100_isize) as usize;
     // SAFETY: path is NUL-terminated and 0755 is a valid directory mode.
@@ -322,6 +335,21 @@ pub fn remove_file(path: &CStr) -> Result<()> {
 pub fn remove_directory(path: &CStr) -> Result<()> {
     const AT_REMOVEDIR: usize = 0x200;
     unlink(path, AT_REMOVEDIR)
+}
+
+pub fn rename_file(source: &CStr, target: &CStr) -> Result<()> {
+    const AT_FDCWD: usize = (-100_isize) as usize;
+    // SAFETY: Both paths are readable NUL-terminated strings.
+    decode(unsafe {
+        syscall4(
+            SYS_RENAMEAT,
+            AT_FDCWD,
+            source.as_ptr() as usize,
+            AT_FDCWD,
+            target.as_ptr() as usize,
+        )
+    })
+    .map(|_| ())
 }
 
 fn unlink(path: &CStr, flags: usize) -> Result<()> {
@@ -603,6 +631,39 @@ pub unsafe extern "C" fn memmove(
     destination
 }
 
+/// Compares two byte ranges lexicographically.
+///
+/// # Safety
+///
+/// Both ranges must be readable for `count` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn memcmp(left: *const c_void, right: *const c_void, count: usize) -> i32 {
+    let left = left.cast::<u8>();
+    let right = right.cast::<u8>();
+    for offset in 0..count {
+        // SAFETY: The caller guarantees both ranges are readable.
+        let difference = unsafe {
+            i32::from(left.add(offset).read_volatile())
+                - i32::from(right.add(offset).read_volatile())
+        };
+        if difference != 0 {
+            return difference;
+        }
+    }
+    0
+}
+
+/// Reports whether two byte ranges differ.
+///
+/// # Safety
+///
+/// Both ranges must be readable for `count` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bcmp(left: *const c_void, right: *const c_void, count: usize) -> i32 {
+    // SAFETY: The caller provides the same readable ranges required by memcmp.
+    unsafe { memcmp(left, right, count) }
+}
+
 /// Returns the length of a NUL-terminated byte string.
 ///
 /// # Safety
@@ -755,9 +816,10 @@ unsafe fn syscall5(
 #[cfg(test)]
 mod tests {
     use super::{
-        change_dir, close, create_directory, current_dir, decode, duplicate_to, memcpy, memmove,
-        memset, open_directory, open_read, open_write, read, read_directory, remove_directory,
-        remove_file, set_read_timeout, strlen, tcp_listener, write_all,
+        bcmp, change_dir, close, create_directory, current_dir, decode, duplicate_to, memcmp,
+        memcpy, memmove, memset, open_directory, open_read, open_write, read, read_directory,
+        remove_directory, remove_file, rename_file, set_mode, set_read_timeout, strlen, sync_file,
+        tcp_listener, write_all,
     };
 
     #[test]
@@ -785,6 +847,11 @@ mod tests {
             memmove(bytes.as_mut_ptr().add(1).cast(), bytes.as_ptr().cast(), 5);
             assert_eq!(bytes, [1, 1, 2, 3, 7, 7]);
 
+            assert_eq!(memcmp(b"abc".as_ptr().cast(), b"abc".as_ptr().cast(), 3), 0);
+            assert!(memcmp(b"abc".as_ptr().cast(), b"abd".as_ptr().cast(), 3) < 0);
+            assert_eq!(bcmp(b"abc".as_ptr().cast(), b"abc".as_ptr().cast(), 3), 0);
+            assert_ne!(bcmp(b"abc".as_ptr().cast(), b"abd".as_ptr().cast(), 3), 0);
+
             assert_eq!(strlen(c"vibe".as_ptr()), 4);
         }
     }
@@ -809,6 +876,28 @@ mod tests {
         assert_eq!(content, *b"vibe");
         close(fd).unwrap();
         remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn atomically_replaces_a_file() {
+        let temporary = c"/tmp/vibe-rt-atomic-test.tmp";
+        let installed = c"/tmp/vibe-rt-atomic-test";
+        let _ = remove_file(temporary);
+        let _ = remove_file(installed);
+
+        let fd = open_write(temporary).unwrap();
+        write_all(fd as usize, b"installed").unwrap();
+        set_mode(fd, 0o755).unwrap();
+        sync_file(fd).unwrap();
+        close(fd).unwrap();
+        rename_file(temporary, installed).unwrap();
+
+        let fd = open_read(installed).unwrap();
+        let mut content = [0_u8; 9];
+        assert_eq!(read(fd as usize, &mut content), Ok(9));
+        assert_eq!(content, *b"installed");
+        close(fd).unwrap();
+        remove_file(installed).unwrap();
     }
 
     #[test]
