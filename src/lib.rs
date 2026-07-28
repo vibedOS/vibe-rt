@@ -343,6 +343,13 @@ pub fn wait_pid(pid: i32) -> Result<i32> {
         .map(|_| status)
 }
 
+pub fn wait_any() -> Result<(i32, i32)> {
+    let mut status = 0_i32;
+    // SAFETY: -1 selects any child; status is writable and a null rusage is allowed.
+    decode(unsafe { syscall4(SYS_WAIT4, usize::MAX, (&raw mut status) as usize, 0, 0) })
+        .map(|pid| (pid as i32, status))
+}
+
 pub fn getpid() -> i32 {
     // SAFETY: getpid has no arguments and cannot fail.
     unsafe { syscall0(SYS_GETPID) as i32 }
