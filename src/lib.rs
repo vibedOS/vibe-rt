@@ -389,6 +389,21 @@ pub unsafe extern "C" fn memmove(
     destination
 }
 
+/// Returns the length of a NUL-terminated byte string.
+///
+/// # Safety
+///
+/// `value` must point to a readable NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn strlen(value: *const c_char) -> usize {
+    let mut length = 0;
+    // SAFETY: The caller guarantees a readable string ending in NUL.
+    while unsafe { value.add(length).read_volatile() } != 0 {
+        length += 1;
+    }
+    length
+}
+
 fn decode(value: isize) -> Result<usize> {
     if value < 0 {
         Err(Errno((-value) as i32))
@@ -525,7 +540,7 @@ unsafe fn syscall5(
 
 #[cfg(test)]
 mod tests {
-    use super::{decode, memcpy, memmove, memset};
+    use super::{decode, memcpy, memmove, memset, strlen};
 
     #[test]
     fn decodes_linux_syscall_results() {
@@ -551,6 +566,8 @@ mod tests {
 
             memmove(bytes.as_mut_ptr().add(1).cast(), bytes.as_ptr().cast(), 5);
             assert_eq!(bytes, [1, 1, 2, 3, 7, 7]);
+
+            assert_eq!(strlen(c"vibe".as_ptr()), 4);
         }
     }
 }
