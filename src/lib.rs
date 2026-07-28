@@ -15,6 +15,7 @@ const SYS_READ: usize = 0;
 const SYS_CLOSE: usize = 3;
 const SYS_NANOSLEEP: usize = 35;
 const SYS_GETPID: usize = 39;
+const SYS_GETUID: usize = 102;
 const SYS_GETPPID: usize = 110;
 const SYS_SOCKET: usize = 41;
 const SYS_ACCEPT: usize = 43;
@@ -355,6 +356,11 @@ pub fn wait_any() -> Result<(i32, i32)> {
 pub fn getpid() -> i32 {
     // SAFETY: getpid has no arguments and cannot fail.
     unsafe { syscall0(SYS_GETPID) as i32 }
+}
+
+pub fn getuid() -> u32 {
+    // SAFETY: getuid has no arguments and cannot fail.
+    unsafe { syscall0(SYS_GETUID) as u32 }
 }
 
 pub fn getppid() -> i32 {
