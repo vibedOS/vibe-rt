@@ -19,6 +19,7 @@ const SYS_GETPID: usize = 39;
 const SYS_GETUID: usize = 102;
 const SYS_GETPPID: usize = 110;
 const SYS_SOCKET: usize = 41;
+const SYS_CONNECT: usize = 42;
 const SYS_ACCEPT: usize = 43;
 const SYS_BIND: usize = 49;
 const SYS_LISTEN: usize = 50;
@@ -187,19 +188,21 @@ pub fn write_all(fd: usize, mut bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+const AF_INET: usize = 2;
+const SOCK_STREAM: usize = 1;
+const SOCK_DGRAM: usize = 2;
+
+#[repr(C)]
+struct SocketAddressV4 {
+    family: u16,
+    port: u16,
+    address: [u8; 4],
+    zero: [u8; 8],
+}
+
 pub fn tcp_listener(port: u16) -> Result<i32> {
-    const AF_INET: usize = 2;
-    const SOCK_STREAM: usize = 1;
     const SOL_SOCKET: usize = 1;
     const SO_REUSEADDR: usize = 2;
-
-    #[repr(C)]
-    struct Address {
-        family: u16,
-        port: u16,
-        address: u32,
-        zero: [u8; 8],
-    }
 
     // SAFETY: socket receives documented integer constants and no pointers.
     let fd = decode(unsafe { syscall3(SYS_SOCKET, AF_INET, SOCK_STREAM, 0) })? as i32;
@@ -217,10 +220,10 @@ pub fn tcp_listener(port: u16) -> Result<i32> {
             )
         })?;
 
-        let address = Address {
+        let address = SocketAddressV4 {
             family: AF_INET as u16,
             port: port.to_be(),
-            address: 0,
+            address: [0; 4],
             zero: [0; 8],
         };
         // SAFETY: address has Linux's sockaddr_in layout and remains live for the call.
@@ -229,7 +232,7 @@ pub fn tcp_listener(port: u16) -> Result<i32> {
                 SYS_BIND,
                 fd as usize,
                 (&raw const address) as usize,
-                size_of::<Address>(),
+                size_of::<SocketAddressV4>(),
             )
         })?;
         // SAFETY: fd is a valid stream socket and 16 is a valid backlog.
@@ -238,6 +241,39 @@ pub fn tcp_listener(port: u16) -> Result<i32> {
     })();
 
     if let Err(error) = setup {
+        let _ = close(fd);
+        return Err(error);
+    }
+    Ok(fd)
+}
+
+pub fn tcp_connect(address: [u8; 4], port: u16) -> Result<i32> {
+    connect_socket(SOCK_STREAM, address, port)
+}
+
+pub fn udp_connect(address: [u8; 4], port: u16) -> Result<i32> {
+    connect_socket(SOCK_DGRAM, address, port)
+}
+
+fn connect_socket(socket_type: usize, address: [u8; 4], port: u16) -> Result<i32> {
+    // SAFETY: socket receives documented integer constants and no pointers.
+    let fd = decode(unsafe { syscall3(SYS_SOCKET, AF_INET, socket_type, 0) })? as i32;
+    let address = SocketAddressV4 {
+        family: AF_INET as u16,
+        port: port.to_be(),
+        address,
+        zero: [0; 8],
+    };
+    // SAFETY: address has Linux's sockaddr_in layout and remains live for the call.
+    let connected = decode(unsafe {
+        syscall3(
+            SYS_CONNECT,
+            fd as usize,
+            (&raw const address) as usize,
+            size_of::<SocketAddressV4>(),
+        )
+    });
+    if let Err(error) = connected {
         let _ = close(fd);
         return Err(error);
     }
@@ -815,11 +851,13 @@ unsafe fn syscall5(
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use super::{
         bcmp, change_dir, close, create_directory, current_dir, decode, duplicate_to, memcmp,
         memcpy, memmove, memset, open_directory, open_read, open_write, read, read_directory,
         remove_directory, remove_file, rename_file, set_mode, set_read_timeout, strlen, sync_file,
-        tcp_listener, write_all,
+        tcp_connect, tcp_listener, udp_connect, write_all,
     };
 
     #[test]
@@ -935,6 +973,22 @@ mod tests {
     fn configures_a_socket_read_timeout() {
         let fd = tcp_listener(0).unwrap();
         set_read_timeout(fd, 1).unwrap();
+        close(fd).unwrap();
+    }
+
+    #[test]
+    fn connects_outbound_ipv4_sockets() {
+        let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let fd = tcp_connect([127, 0, 0, 1], tcp.local_addr().unwrap().port()).unwrap();
+        tcp.accept().unwrap();
+        close(fd).unwrap();
+
+        let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let fd = udp_connect([127, 0, 0, 1], udp.local_addr().unwrap().port()).unwrap();
+        write_all(fd as usize, b"vibe").unwrap();
+        let mut bytes = [0_u8; 4];
+        assert_eq!(udp.recv(&mut bytes).unwrap(), 4);
+        assert_eq!(bytes, *b"vibe");
         close(fd).unwrap();
     }
 }
