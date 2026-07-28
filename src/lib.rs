@@ -6,13 +6,20 @@ use core::arch::asm;
 use core::ffi::{CStr, c_char, c_void};
 use core::fmt::{self, Write};
 use core::marker::PhantomData;
+use core::mem::size_of;
 use core::ptr;
 use core::slice;
 
 const SYS_WRITE: usize = 1;
 const SYS_READ: usize = 0;
+const SYS_CLOSE: usize = 3;
 const SYS_NANOSLEEP: usize = 35;
 const SYS_GETPID: usize = 39;
+const SYS_SOCKET: usize = 41;
+const SYS_ACCEPT: usize = 43;
+const SYS_BIND: usize = 49;
+const SYS_LISTEN: usize = 50;
+const SYS_SETSOCKOPT: usize = 54;
 const SYS_FORK: usize = 57;
 const SYS_EXECVE: usize = 59;
 const SYS_WAIT4: usize = 61;
@@ -165,6 +172,73 @@ pub fn write_all(fd: usize, mut bytes: &[u8]) -> Result<()> {
         bytes = &bytes[written..];
     }
     Ok(())
+}
+
+pub fn tcp_listener(port: u16) -> Result<i32> {
+    const AF_INET: usize = 2;
+    const SOCK_STREAM: usize = 1;
+    const SOL_SOCKET: usize = 1;
+    const SO_REUSEADDR: usize = 2;
+
+    #[repr(C)]
+    struct Address {
+        family: u16,
+        port: u16,
+        address: u32,
+        zero: [u8; 8],
+    }
+
+    // SAFETY: socket receives documented integer constants and no pointers.
+    let fd = decode(unsafe { syscall3(SYS_SOCKET, AF_INET, SOCK_STREAM, 0) })? as i32;
+    let setup = (|| {
+        let enabled = 1_i32;
+        // SAFETY: enabled points to a readable four-byte socket option.
+        decode(unsafe {
+            syscall5(
+                SYS_SETSOCKOPT,
+                fd as usize,
+                SOL_SOCKET,
+                SO_REUSEADDR,
+                (&raw const enabled) as usize,
+                size_of::<i32>(),
+            )
+        })?;
+
+        let address = Address {
+            family: AF_INET as u16,
+            port: port.to_be(),
+            address: 0,
+            zero: [0; 8],
+        };
+        // SAFETY: address has Linux's sockaddr_in layout and remains live for the call.
+        decode(unsafe {
+            syscall3(
+                SYS_BIND,
+                fd as usize,
+                (&raw const address) as usize,
+                size_of::<Address>(),
+            )
+        })?;
+        // SAFETY: fd is a valid stream socket and 16 is a valid backlog.
+        decode(unsafe { syscall2(SYS_LISTEN, fd as usize, 16) })?;
+        Ok(())
+    })();
+
+    if let Err(error) = setup {
+        let _ = close(fd);
+        return Err(error);
+    }
+    Ok(fd)
+}
+
+pub fn accept(listener: i32) -> Result<i32> {
+    // SAFETY: Null address pointers request a connection without its peer address.
+    decode(unsafe { syscall3(SYS_ACCEPT, listener as usize, 0, 0) }).map(|fd| fd as i32)
+}
+
+pub fn close(fd: i32) -> Result<()> {
+    // SAFETY: close accepts any integer descriptor and reports invalid ones.
+    decode(unsafe { syscall1(SYS_CLOSE, fd as usize) }).map(|_| ())
 }
 
 #[doc(hidden)]
