@@ -10,13 +10,14 @@ wrappers without a C runtime.
 - byte-preserving argument and environment iterators
 - console and file-descriptor reads and writes
 - TCP listen, accept, and read timeouts
-- file open, directory reads, create, remove, `dup2`, `chdir`, and `getcwd`
+- file open, directory reads, create, remove, atomic rename, `fsync`, mode
+  changes, `dup2`, `chdir`, and `getcwd`
 - filesystem mounting
 - `fork`, `execve`, child waits, process IDs, user IDs, sleep, and exit
 - parent-death signaling
 - filesystem sync and reboot
 - `print!`, `println!`, and `eprintln!`
-- compiler memory symbols required by the libc-free binaries
+- compiler memory and byte-comparison symbols required by libc-free binaries
 
 The API returns raw Linux error numbers through `Errno`; it does not try to be
 a general Unix compatibility layer.
