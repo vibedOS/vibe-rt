@@ -26,6 +26,7 @@ const SYS_FORK: usize = 57;
 const SYS_EXECVE: usize = 59;
 const SYS_WAIT4: usize = 61;
 const SYS_GETCWD: usize = 79;
+const SYS_CHDIR: usize = 80;
 const SYS_SYNC: usize = 162;
 const SYS_PRCTL: usize = 157;
 const SYS_PAUSE: usize = 34;
@@ -313,6 +314,11 @@ pub fn current_dir(buffer: &mut [u8]) -> Result<&[u8]> {
         return Err(Errno(5));
     }
     Ok(&buffer[..length - 1])
+}
+
+pub fn change_dir(path: &CStr) -> Result<()> {
+    // SAFETY: path is a readable NUL-terminated string.
+    decode(unsafe { syscall1(SYS_CHDIR, path.as_ptr() as usize) }).map(|_| ())
 }
 
 #[doc(hidden)]
@@ -713,7 +719,7 @@ unsafe fn syscall5(
 #[cfg(test)]
 mod tests {
     use super::{
-        close, current_dir, decode, memcpy, memmove, memset, open_directory, open_read,
+        change_dir, close, current_dir, decode, memcpy, memmove, memset, open_directory, open_read,
         read_directory, set_read_timeout, strlen, tcp_listener,
     };
 
@@ -756,6 +762,7 @@ mod tests {
     fn reads_the_current_directory() {
         let mut buffer = [0_u8; 4096];
         assert!(!current_dir(&mut buffer).unwrap().is_empty());
+        change_dir(c".").unwrap();
     }
 
     #[test]
