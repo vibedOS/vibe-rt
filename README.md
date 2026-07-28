@@ -9,7 +9,7 @@ wrappers without a C runtime.
 - `_start` integration through the `entry!` macro
 - byte-preserving argument and environment iterators
 - console and file-descriptor reads and writes
-- TCP listen, accept, and read timeouts
+- TCP listen/accept, outbound TCP/UDP, and read timeouts
 - file open, directory reads, create, remove, atomic rename, `fsync`, mode
   changes, `dup2`, `chdir`, and `getcwd`
 - filesystem mounting
