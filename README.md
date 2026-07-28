@@ -34,6 +34,9 @@ cargo test
 The tests exercise startup-stack parsing, environment lookup, error decoding,
 and filesystem wrappers on the Linux host.
 
+Downstream crates can enable the `hosted` feature while running their standard
+test binaries to let `std` provide the exception-handling personality.
+
 Programs use `entry!` instead of the standard Rust runtime:
 
 ```rust

@@ -591,7 +591,7 @@ pub fn exit(code: i32) -> ! {
 }
 
 #[doc(hidden)]
-#[cfg(not(test))]
+#[cfg(all(not(test), not(feature = "hosted")))]
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_eh_personality() {}
 
