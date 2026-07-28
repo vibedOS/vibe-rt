@@ -25,11 +25,13 @@ const SYS_SETSOCKOPT: usize = 54;
 const SYS_FORK: usize = 57;
 const SYS_EXECVE: usize = 59;
 const SYS_WAIT4: usize = 61;
+const SYS_GETCWD: usize = 79;
 const SYS_SYNC: usize = 162;
 const SYS_PRCTL: usize = 157;
 const SYS_PAUSE: usize = 34;
 const SYS_MOUNT: usize = 165;
 const SYS_REBOOT: usize = 169;
+const SYS_GETDENTS64: usize = 217;
 const SYS_EXIT_GROUP: usize = 231;
 const SYS_OPENAT: usize = 257;
 
@@ -274,11 +276,43 @@ pub fn close(fd: i32) -> Result<()> {
 }
 
 pub fn open_read(path: &CStr) -> Result<i32> {
-    const AT_FDCWD: usize = (-100_isize) as usize;
     const O_RDONLY: usize = 0;
-    // SAFETY: path is NUL-terminated; read-only openat ignores the mode argument.
-    decode(unsafe { syscall4(SYS_OPENAT, AT_FDCWD, path.as_ptr() as usize, O_RDONLY, 0) })
+    open(path, O_RDONLY)
+}
+
+pub fn open_directory(path: &CStr) -> Result<i32> {
+    const O_RDONLY: usize = 0;
+    const O_DIRECTORY: usize = 0o200000;
+    open(path, O_RDONLY | O_DIRECTORY)
+}
+
+fn open(path: &CStr, flags: usize) -> Result<i32> {
+    const AT_FDCWD: usize = (-100_isize) as usize;
+    // SAFETY: path is NUL-terminated; these open flags ignore the mode argument.
+    decode(unsafe { syscall4(SYS_OPENAT, AT_FDCWD, path.as_ptr() as usize, flags, 0) })
         .map(|fd| fd as i32)
+}
+
+pub fn read_directory(fd: i32, buffer: &mut [u8]) -> Result<usize> {
+    // SAFETY: buffer is writable and fd must name an open directory.
+    decode(unsafe {
+        syscall3(
+            SYS_GETDENTS64,
+            fd as usize,
+            buffer.as_mut_ptr() as usize,
+            buffer.len(),
+        )
+    })
+}
+
+pub fn current_dir(buffer: &mut [u8]) -> Result<&[u8]> {
+    // SAFETY: buffer is writable for its full length.
+    let length =
+        decode(unsafe { syscall2(SYS_GETCWD, buffer.as_mut_ptr() as usize, buffer.len()) })?;
+    if length == 0 || buffer[length - 1] != 0 {
+        return Err(Errno(5));
+    }
+    Ok(&buffer[..length - 1])
 }
 
 #[doc(hidden)]
@@ -679,7 +713,8 @@ unsafe fn syscall5(
 #[cfg(test)]
 mod tests {
     use super::{
-        close, decode, memcpy, memmove, memset, open_read, set_read_timeout, strlen, tcp_listener,
+        close, current_dir, decode, memcpy, memmove, memset, open_directory, open_read,
+        read_directory, set_read_timeout, strlen, tcp_listener,
     };
 
     #[test]
@@ -714,6 +749,20 @@ mod tests {
     #[test]
     fn opens_a_file_for_reading() {
         let fd = open_read(c"/dev/null").unwrap();
+        close(fd).unwrap();
+    }
+
+    #[test]
+    fn reads_the_current_directory() {
+        let mut buffer = [0_u8; 4096];
+        assert!(!current_dir(&mut buffer).unwrap().is_empty());
+    }
+
+    #[test]
+    fn reads_directory_entries() {
+        let fd = open_directory(c".").unwrap();
+        let mut buffer = [0_u8; 4096];
+        assert_ne!(read_directory(fd, &mut buffer).unwrap(), 0);
         close(fd).unwrap();
     }
 
