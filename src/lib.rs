@@ -240,6 +240,34 @@ pub fn accept(listener: i32) -> Result<i32> {
     decode(unsafe { syscall3(SYS_ACCEPT, listener as usize, 0, 0) }).map(|fd| fd as i32)
 }
 
+pub fn set_read_timeout(fd: i32, seconds: u32) -> Result<()> {
+    const SOL_SOCKET: usize = 1;
+    const SO_RCVTIMEO: usize = 20;
+
+    #[repr(C)]
+    struct Timeval {
+        seconds: i64,
+        microseconds: i64,
+    }
+
+    let timeout = Timeval {
+        seconds: i64::from(seconds),
+        microseconds: 0,
+    };
+    // SAFETY: timeout has Linux's timeval layout and remains readable for the call.
+    decode(unsafe {
+        syscall5(
+            SYS_SETSOCKOPT,
+            fd as usize,
+            SOL_SOCKET,
+            SO_RCVTIMEO,
+            (&raw const timeout) as usize,
+            size_of::<Timeval>(),
+        )
+    })
+    .map(|_| ())
+}
+
 pub fn close(fd: i32) -> Result<()> {
     // SAFETY: close accepts any integer descriptor and reports invalid ones.
     decode(unsafe { syscall1(SYS_CLOSE, fd as usize) }).map(|_| ())
@@ -650,7 +678,9 @@ unsafe fn syscall5(
 
 #[cfg(test)]
 mod tests {
-    use super::{close, decode, memcpy, memmove, memset, open_read, strlen};
+    use super::{
+        close, decode, memcpy, memmove, memset, open_read, set_read_timeout, strlen, tcp_listener,
+    };
 
     #[test]
     fn decodes_linux_syscall_results() {
@@ -684,6 +714,13 @@ mod tests {
     #[test]
     fn opens_a_file_for_reading() {
         let fd = open_read(c"/dev/null").unwrap();
+        close(fd).unwrap();
+    }
+
+    #[test]
+    fn configures_a_socket_read_timeout() {
+        let fd = tcp_listener(0).unwrap();
+        set_read_timeout(fd, 1).unwrap();
         close(fd).unwrap();
     }
 }
