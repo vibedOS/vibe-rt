@@ -15,6 +15,7 @@ const SYS_READ: usize = 0;
 const SYS_CLOSE: usize = 3;
 const SYS_NANOSLEEP: usize = 35;
 const SYS_GETPID: usize = 39;
+const SYS_GETPPID: usize = 110;
 const SYS_SOCKET: usize = 41;
 const SYS_ACCEPT: usize = 43;
 const SYS_BIND: usize = 49;
@@ -24,6 +25,7 @@ const SYS_FORK: usize = 57;
 const SYS_EXECVE: usize = 59;
 const SYS_WAIT4: usize = 61;
 const SYS_SYNC: usize = 162;
+const SYS_PRCTL: usize = 157;
 const SYS_PAUSE: usize = 34;
 const SYS_MOUNT: usize = 165;
 const SYS_REBOOT: usize = 169;
@@ -353,6 +355,18 @@ pub fn wait_any() -> Result<(i32, i32)> {
 pub fn getpid() -> i32 {
     // SAFETY: getpid has no arguments and cannot fail.
     unsafe { syscall0(SYS_GETPID) as i32 }
+}
+
+pub fn getppid() -> i32 {
+    // SAFETY: getppid has no arguments and cannot fail.
+    unsafe { syscall0(SYS_GETPPID) as i32 }
+}
+
+pub fn terminate_with_parent() -> Result<()> {
+    const PR_SET_PDEATHSIG: usize = 1;
+    const SIGTERM: usize = 15;
+    // SAFETY: prctl documents these constants and ignores the remaining arguments.
+    decode(unsafe { syscall5(SYS_PRCTL, PR_SET_PDEATHSIG, SIGTERM, 0, 0, 0) }).map(|_| ())
 }
 
 pub fn sleep(seconds: i64) {
