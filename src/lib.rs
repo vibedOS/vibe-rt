@@ -13,6 +13,7 @@ use core::slice;
 const SYS_WRITE: usize = 1;
 const SYS_READ: usize = 0;
 const SYS_CLOSE: usize = 3;
+const SYS_DUP2: usize = 33;
 const SYS_NANOSLEEP: usize = 35;
 const SYS_GETPID: usize = 39;
 const SYS_GETUID: usize = 102;
@@ -35,6 +36,8 @@ const SYS_REBOOT: usize = 169;
 const SYS_GETDENTS64: usize = 217;
 const SYS_EXIT_GROUP: usize = 231;
 const SYS_OPENAT: usize = 257;
+const SYS_MKDIRAT: usize = 258;
+const SYS_UNLINKAT: usize = 263;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Errno(pub i32);
@@ -278,20 +281,53 @@ pub fn close(fd: i32) -> Result<()> {
 
 pub fn open_read(path: &CStr) -> Result<i32> {
     const O_RDONLY: usize = 0;
-    open(path, O_RDONLY)
+    open(path, O_RDONLY, 0)
+}
+
+pub fn open_write(path: &CStr) -> Result<i32> {
+    const O_WRONLY: usize = 1;
+    const O_CREAT: usize = 0o100;
+    const O_TRUNC: usize = 0o1000;
+    open(path, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
 }
 
 pub fn open_directory(path: &CStr) -> Result<i32> {
     const O_RDONLY: usize = 0;
     const O_DIRECTORY: usize = 0o200000;
-    open(path, O_RDONLY | O_DIRECTORY)
+    open(path, O_RDONLY | O_DIRECTORY, 0)
 }
 
-fn open(path: &CStr, flags: usize) -> Result<i32> {
+fn open(path: &CStr, flags: usize, mode: usize) -> Result<i32> {
     const AT_FDCWD: usize = (-100_isize) as usize;
-    // SAFETY: path is NUL-terminated; these open flags ignore the mode argument.
-    decode(unsafe { syscall4(SYS_OPENAT, AT_FDCWD, path.as_ptr() as usize, flags, 0) })
+    // SAFETY: path is NUL-terminated and mode is used only when creating a file.
+    decode(unsafe { syscall4(SYS_OPENAT, AT_FDCWD, path.as_ptr() as usize, flags, mode) })
         .map(|fd| fd as i32)
+}
+
+pub fn duplicate_to(fd: i32, target: i32) -> Result<()> {
+    // SAFETY: dup2 validates both integer descriptors.
+    decode(unsafe { syscall2(SYS_DUP2, fd as usize, target as usize) }).map(|_| ())
+}
+
+pub fn create_directory(path: &CStr) -> Result<()> {
+    const AT_FDCWD: usize = (-100_isize) as usize;
+    // SAFETY: path is NUL-terminated and 0755 is a valid directory mode.
+    decode(unsafe { syscall3(SYS_MKDIRAT, AT_FDCWD, path.as_ptr() as usize, 0o755) }).map(|_| ())
+}
+
+pub fn remove_file(path: &CStr) -> Result<()> {
+    unlink(path, 0)
+}
+
+pub fn remove_directory(path: &CStr) -> Result<()> {
+    const AT_REMOVEDIR: usize = 0x200;
+    unlink(path, AT_REMOVEDIR)
+}
+
+fn unlink(path: &CStr, flags: usize) -> Result<()> {
+    const AT_FDCWD: usize = (-100_isize) as usize;
+    // SAFETY: path is NUL-terminated and flags selects file or directory removal.
+    decode(unsafe { syscall3(SYS_UNLINKAT, AT_FDCWD, path.as_ptr() as usize, flags) }).map(|_| ())
 }
 
 pub fn read_directory(fd: i32, buffer: &mut [u8]) -> Result<usize> {
@@ -719,8 +755,9 @@ unsafe fn syscall5(
 #[cfg(test)]
 mod tests {
     use super::{
-        change_dir, close, current_dir, decode, memcpy, memmove, memset, open_directory, open_read,
-        read_directory, set_read_timeout, strlen, tcp_listener,
+        change_dir, close, create_directory, current_dir, decode, duplicate_to, memcpy, memmove,
+        memset, open_directory, open_read, open_write, read, read_directory, remove_directory,
+        remove_file, set_read_timeout, strlen, tcp_listener, write_all,
     };
 
     #[test]
@@ -755,6 +792,38 @@ mod tests {
     #[test]
     fn opens_a_file_for_reading() {
         let fd = open_read(c"/dev/null").unwrap();
+        close(fd).unwrap();
+    }
+
+    #[test]
+    fn writes_and_removes_a_file() {
+        let path = c"/tmp/vibe-rt-write-test";
+        let _ = remove_file(path);
+        let fd = open_write(path).unwrap();
+        write_all(fd as usize, b"vibe").unwrap();
+        close(fd).unwrap();
+
+        let fd = open_read(path).unwrap();
+        let mut content = [0_u8; 4];
+        assert_eq!(read(fd as usize, &mut content), Ok(4));
+        assert_eq!(content, *b"vibe");
+        close(fd).unwrap();
+        remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn creates_and_removes_a_directory() {
+        let path = c"/tmp/vibe-rt-directory-test";
+        let _ = remove_directory(path);
+        create_directory(path).unwrap();
+        remove_directory(path).unwrap();
+    }
+
+    #[test]
+    fn duplicates_a_descriptor() {
+        let fd = open_read(c"/dev/null").unwrap();
+        duplicate_to(fd, 99).unwrap();
+        close(99).unwrap();
         close(fd).unwrap();
     }
 
